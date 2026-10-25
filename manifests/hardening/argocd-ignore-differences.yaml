@@ -1,0 +1,15 @@
+# §16 — snippet for an Argo CD Application that owns the demo HTTPRoute.
+# Argo Rollouts mutates backendRefs[].weight and injects managedRoutes rules; ignore exactly that.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo
+  namespace: argocd
+spec:
+  # ... project / source / destination / syncPolicy ...
+  ignoreDifferences:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      jqPathExpressions:
+        - .spec.rules[].backendRefs[].weight
+        - .spec.rules[] | select(.name == "canary-smoke")   # one line per managedRoute name

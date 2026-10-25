@@ -1,0 +1,38 @@
+# §16 — apply AFTER the demo works, then re-verify: the observer grid must stay green and
+# Prometheus must keep scraping (Status → Targets).
+#
+# With STRICT mTLS every caller of a `demo` pod must be in the mesh. The gateway and the
+# observer already are (ambient namespace). Prometheus is NOT, so add the monitoring
+# namespace to the mesh first:   kubectl label ns monitoring istio.io/dataplane-mode=ambient
+# and restart its pods — otherwise the canarybird PodMonitor scrapes fail and the app-* gates
+# go Inconclusive.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: demo
+spec:
+  mtls:
+    mode: STRICT
+---
+# Who may call the rollout pods (ambient L4 policy; add a waypoint for L7 rules):
+#   - the ingress gateway (auto-deployed ServiceAccount <gateway-name>-istio)
+#   - the observer (its /control fan-out hits pod IPs on :8080 directly)
+#   - Prometheus in `monitoring` (scrapes /metrics) — only works once that namespace is in the mesh
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-known-callers
+  namespace: demo
+spec:
+  selector:
+    matchLabels: { app: demo }
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - cluster.local/ns/istio-ingress/sa/demo-gateway-istio
+              - cluster.local/ns/demo/sa/canarybird-observer
+        - source:
+            namespaces: ["monitoring"]

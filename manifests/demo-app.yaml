@@ -1,0 +1,232 @@
+# Demo app: canarybird (ghcr.io/thiha-min-thant/canarybird:dev).
+# One image for every version — a rollout is a change of the VERSION/COLOR env, not a new tag.
+#   demo-stable / demo-canary   Services Argo Rollouts points the HTTPRoute at
+#   demo-headless               every rollout pod, incl. not-ready ones → /control fan-out (CONTROL_PEERS)
+#   canarybird-observer         a single pod that generates load THROUGH the gateway and serves the UI;
+#                               port-forward it to watch the real split vs. the controller's weight
+# Namespace `demo` comes from rollouts-gwapi-rbac.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-stable
+  namespace: demo
+  labels: { app: demo }
+spec:
+  selector: { app: demo }         # Argo Rollouts appends rollouts-pod-template-hash automatically
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-canary
+  namespace: demo
+  labels: { app: demo }
+spec:
+  selector: { app: demo }
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-headless
+  namespace: demo
+  labels: { app: demo }
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true  # so a `not-ready` pod can still be reset
+  selector: { app: demo }
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: demo
+  namespace: demo
+spec:
+  parentRefs:
+    - name: demo-gateway
+      namespace: istio-ingress
+  # hostnames: ["demo.example.internal"]   # set in production; omitted so port-forward works
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: demo-stable
+          port: 80
+          weight: 100
+        - name: demo-canary
+          port: 80
+          weight: 0
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: demo
+  namespace: demo
+spec:
+  replicas: 4
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels: { app: demo }
+  strategy:
+    canary:
+      canaryService: demo-canary
+      stableService: demo-stable
+      dynamicStableScale: true            # scale stable down as canary scales up (saves capacity)
+      abortScaleDownDelaySeconds: 30
+      trafficRouting:
+        plugins:
+          argoproj-labs/gatewayAPI:
+            httpRoute: demo
+            namespace: demo
+      analysis:                           # background analysis – runs from step 1 until the rollout completes
+        templates:
+          - templateName: canary-slo
+        startingStep: 1
+        args:
+          - name: canary-service
+            value: demo-canary
+          - name: namespace
+            value: demo
+          - name: canary-hash              # selects the canary pods' own metrics, whatever their VERSION is
+            valueFrom:
+              podTemplateHashValue: Latest
+      steps:
+        - setWeight: 10
+        - pause: { duration: 90s }
+        - setWeight: 30
+        - pause: { duration: 90s }
+        - setWeight: 60
+        - pause: {}                       # manual gate – promote with `kubectl argo rollouts promote`
+        # implicit: setWeight 100 + stable switch
+  template:
+    metadata:
+      labels: { app: demo }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532                  # distroless "nonroot"
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: canarybird
+          image: ghcr.io/thiha-min-thant/canarybird:dev
+          imagePullPolicy: IfNotPresent   # lets `kind load docker-image` supply the tag when ghcr.io has none
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            # --- the two lines a rollout changes ---
+            - { name: VERSION, value: v1 }
+            - { name: COLOR,   value: blue }
+            # ---------------------------------------
+            - { name: POD_NAME,  valueFrom: { fieldRef: { fieldPath: metadata.name } } }
+            - { name: NODE_NAME, valueFrom: { fieldRef: { fieldPath: spec.nodeName } } }
+            - { name: NAMESPACE, valueFrom: { fieldRef: { fieldPath: metadata.namespace } } }
+            - { name: CONTROL_PEERS, value: demo-headless }   # /control fans out to every rollout pod
+            - { name: LOADGEN_ENABLED, value: "false" }       # the observer generates the traffic
+            - { name: LOG_FORMAT, value: json }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { memory: 512Mi }   # `memory-leak` holds 256 MiB; lower this to demo an OOMKill
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+# The observer: one canarybird pod outside the HTTPRoute that (a) generates traffic through the
+# gateway so the split follows the controller's weights, and (b) serves the UI + Break-something panel.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: canarybird-observer
+  namespace: demo
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: canarybird-observer
+  namespace: demo
+  labels: { app: canarybird-observer }
+spec:
+  selector: { app: canarybird-observer }
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: canarybird-observer
+  namespace: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: canarybird-observer }
+  template:
+    metadata:
+      labels: { app: canarybird-observer }
+    spec:
+      serviceAccountName: canarybird-observer
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: canarybird
+          image: ghcr.io/thiha-min-thant/canarybird:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - { name: VERSION, value: observer }   # never matches v1/v2/…, so chaos never lands here
+            - { name: COLOR,   value: white }
+            - { name: POD_NAME,  valueFrom: { fieldRef: { fieldPath: metadata.name } } }
+            - { name: NODE_NAME, valueFrom: { fieldRef: { fieldPath: spec.nodeName } } }
+            - { name: NAMESPACE, valueFrom: { fieldRef: { fieldPath: metadata.namespace } } }
+            - { name: LOADGEN_ENABLED, value: "true" }
+            - { name: LOADGEN_RPS, value: "50" }
+            - { name: LOADGEN_KEEPALIVE, value: "false" }      # flip to true in the UI to see keep-alive pinning
+            - { name: LOADGEN_TARGET, value: http://demo-gateway-istio.istio-ingress.svc.cluster.local }
+            - { name: CONTROL_PEERS, value: demo-headless }
+            - { name: LOG_FORMAT, value: json }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }

@@ -1,0 +1,30 @@
+# Platform-owned Gateway (Gateway API v1). Istio auto-deploys an Envoy
+# Deployment + Service named demo-gateway-istio in this namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: istio-ingress
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: demo-gateway
+  namespace: istio-ingress
+  annotations:
+    # kind has no LoadBalancer implementation; expose as ClusterIP and port-forward.
+    # Remove this annotation (or install cloud-provider-kind) to get a LoadBalancer.
+    networking.istio.io/service-type: ClusterIP
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: demo

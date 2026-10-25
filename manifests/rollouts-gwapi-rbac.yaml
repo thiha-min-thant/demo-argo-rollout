@@ -1,0 +1,38 @@
+# App namespace + least-privilege RBAC for the Gateway API plugin, scoped to `demo`.
+# Verbs follow the plugin's documented namespace-scoped Role (get/list/update/patch on
+# HTTPRoutes, get on Services). No ClusterRole: repeat per namespace or template it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+  labels:
+    istio.io/dataplane-mode: ambient              # mTLS via ztunnel, no sidecars
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argo-rollouts-gatewayapi
+  namespace: demo
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes"]
+    verbs: ["get", "list", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argo-rollouts-gatewayapi
+  namespace: demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argo-rollouts-gatewayapi
+subjects:
+  - kind: ServiceAccount
+    name: argo-rollouts
+    namespace: argo-rollouts

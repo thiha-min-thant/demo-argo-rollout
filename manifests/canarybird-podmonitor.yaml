@@ -1,0 +1,20 @@
+# Scrape canarybird's own /metrics (rollout pods + observer). The relabeling copies the
+# rollouts-pod-template-hash pod label onto every sample so the AnalysisTemplate can select
+# the canary pods by hash (podTemplateHashValue: Latest) instead of by a hard-coded VERSION.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: canarybird
+  namespace: demo
+spec:
+  selector:
+    matchExpressions:
+      - { key: app, operator: In, values: [demo, canarybird-observer] }
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      relabelings:
+        - action: replace
+          sourceLabels: [__meta_kubernetes_pod_label_rollouts_pod_template_hash]
+          targetLabel: rollouts_pod_template_hash

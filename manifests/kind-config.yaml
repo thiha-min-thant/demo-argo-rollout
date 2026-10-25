@@ -1,0 +1,14 @@
+# kind v0.33.0 — 1 control-plane + 2 workers.
+# Image pinned by digest (kind's recommendation for reproducible clusters).
+# Kubernetes v1.37.0 is kind v0.33.0's default and is inside Istio 1.31's
+# supported window (1.32–1.37 per istio.io/docs/releases/supported-releases).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: rollouts-lab
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+  - role: worker
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+  - role: worker
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5

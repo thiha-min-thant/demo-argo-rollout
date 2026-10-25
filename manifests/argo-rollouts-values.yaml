@@ -1,0 +1,53 @@
+# argo-helm chart argo-rollouts-2.43.8 (app v1.10.1).
+# The Gateway API traffic-router plugin is copied from a digest-pinned OCI image
+# by an init container and referenced as file:// — nothing is downloaded at runtime.
+installCRDs: true
+
+controller:
+  replicas: 2                      # leader-elected; HA for the control loop
+  logging:
+    format: json
+    level: info
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { memory: 512Mi }
+  pdb:
+    enabled: true
+    minAvailable: 1
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+
+  # --- Gateway API traffic-router plugin (argoproj-labs) v0.17.0 ---
+  initContainers:
+    - name: copy-gwapi-plugin
+      # Index digest for v0.17.0, resolved 2026-10-24:
+      #   docker buildx imagetools inspect ghcr.io/argoproj-labs/rollouts-plugin-trafficrouter-gatewayapi:v0.17.0
+      image: ghcr.io/argoproj-labs/rollouts-plugin-trafficrouter-gatewayapi:v0.17.0@sha256:bc40d5edf13307e455f6c18cbf9cc79715165cbee8b05a674fd88119f119d4a2
+      command: ["/bin/sh", "-c"]
+      args:
+        - cp /bin/rollouts-plugin-trafficrouter-gatewayapi /plugins
+      securityContext:
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        runAsUser: 999               # matches the image's USER (and the Rollouts controller UID)
+        capabilities: { drop: ["ALL"] }
+        seccompProfile: { type: RuntimeDefault }
+      volumeMounts:
+        - name: gwapi-plugin
+          mountPath: /plugins
+  volumes:
+    - name: gwapi-plugin
+      emptyDir: {}
+  volumeMounts:
+    - name: gwapi-plugin
+      mountPath: /plugins
+  trafficRouterPlugins:
+    - name: argoproj-labs/gatewayAPI
+      location: "file:///plugins/rollouts-plugin-trafficrouter-gatewayapi"
+      args:
+        - "-logformat=json"          # structured logs for your log pipeline
+
+dashboard:
+  enabled: true                    # kubectl argo rollouts dashboard is an alternative

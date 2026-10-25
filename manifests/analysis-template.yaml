@@ -1,0 +1,86 @@
+# SLO gates for the canary, from two vantage points:
+#   gateway-*  Istio telemetry at the edge, for the canary Service (mesh view, app-agnostic)
+#   app-*      canarybird's own /metrics, selected by the canary ReplicaSet hash (server view)
+# `len(result) == 0 || isNaN(result[0])` keeps a zero-traffic window from counting as a failure.
+# Tighten in production if "no traffic" should block promotion.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: canary-slo
+  namespace: demo
+spec:
+  args:
+    - name: canary-service
+    - name: namespace
+    - name: canary-hash
+    - name: prometheus-url
+      value: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+  metrics:
+    - name: gateway-success-rate
+      interval: 30s
+      initialDelay: 30s
+      failureLimit: 1            # 2 bad measurements → AnalysisRun Failed → Rollout aborted
+      inconclusiveLimit: 3
+      successCondition: len(result) == 0 || isNaN(result[0]) || result[0] >= 0.99
+      provider:
+        prometheus:
+          address: "{{args.prometheus-url}}"
+          timeout: 10
+          query: |
+            sum(rate(istio_requests_total{
+              reporter="source",
+              destination_service="{{args.canary-service}}.{{args.namespace}}.svc.cluster.local",
+              response_code!~"5.."}[1m]))
+            /
+            sum(rate(istio_requests_total{
+              reporter="source",
+              destination_service="{{args.canary-service}}.{{args.namespace}}.svc.cluster.local"}[1m]))
+    - name: gateway-p99-latency-ms
+      interval: 30s
+      initialDelay: 30s
+      failureLimit: 1
+      inconclusiveLimit: 3
+      successCondition: len(result) == 0 || isNaN(result[0]) || result[0] < 1000
+      provider:
+        prometheus:
+          address: "{{args.prometheus-url}}"
+          timeout: 10
+          query: |
+            histogram_quantile(0.99,
+              sum by (le) (rate(istio_request_duration_milliseconds_bucket{
+                reporter="source",
+                destination_service="{{args.canary-service}}.{{args.namespace}}.svc.cluster.local"}[1m])))
+    - name: app-success-rate
+      interval: 30s
+      initialDelay: 30s
+      failureLimit: 1
+      inconclusiveLimit: 3
+      successCondition: len(result) == 0 || isNaN(result[0]) || result[0] >= 0.99
+      provider:
+        prometheus:
+          address: "{{args.prometheus-url}}"
+          timeout: 10
+          query: |
+            sum(rate(canarybird_http_requests_total{
+              namespace="{{args.namespace}}",
+              rollouts_pod_template_hash="{{args.canary-hash}}",
+              status!~"5.."}[1m]))
+            /
+            sum(rate(canarybird_http_requests_total{
+              namespace="{{args.namespace}}",
+              rollouts_pod_template_hash="{{args.canary-hash}}"}[1m]))
+    - name: app-p95-latency-s
+      interval: 30s
+      initialDelay: 30s
+      failureLimit: 1
+      inconclusiveLimit: 3
+      successCondition: len(result) == 0 || isNaN(result[0]) || result[0] < 0.5
+      provider:
+        prometheus:
+          address: "{{args.prometheus-url}}"
+          timeout: 10
+          query: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(canarybird_http_request_duration_seconds_bucket{
+                namespace="{{args.namespace}}",
+                rollouts_pod_template_hash="{{args.canary-hash}}"}[1m])))
